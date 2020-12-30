@@ -23,7 +23,7 @@ let server: HttpsServer | Server;
 if (httpsEnabled) {
 	server = new HttpsServer({
 		key: readFileSync(join(sslCertificatePath, 'privkey.pem')),
-		cert: readFileSync(join(sslCertificatePath, 'fullchain.pem'))
+		cert: readFileSync(join(sslCertificatePath, 'fullchain.pem')),
 	}, app);
 } else {
 	server = new Server(app);
@@ -61,28 +61,51 @@ app.get('/health', (req, res) => {
 		uptime: process.uptime(),
 		connectionCount,
 		address,
-		name: process.env.NAME
+		name: process.env.NAME,
 	});
 });
 
 // API
 app.get('/v1/lobby/:lobby', (req, res) => {
-  const lobbyParam = req.params.lobby;
-  if ( lobbyParam && typeof lobbyParam === 'string' && lobbyParam.length === 6 ) {
-    let allClients: any = {};
-    let socketsInLobby = Object.keys(io.sockets.adapter.rooms[lobbyParam].sockets);
-    for (let s of socketsInLobby) {
-      if ( clients.has(s) ) {
-        allClients[s] = clients.get(s);
-      }
-    }
+  const lobbyParam = req.params.lobby?.toUpperCase();
 
-    res.json({
-      lobby: lobbyParam,
-      playerCount: socketsInLobby.length,
-      clients: allClients,
+  // Validate lobby code
+  if ( !lobbyParam || typeof lobbyParam !== 'string' || lobbyParam.length !== 6 ) {
+    return res.json({
+      error: true,
+      message: 'invalid lobby code',
     });
   }
+
+  // Look for active lobby
+  const lobby = io.sockets.adapter.rooms[lobbyParam];
+  if ( !lobby ) {
+    return res.json({
+      error: true,
+      message: 'failed to find active prox lobby',
+    });
+  }
+
+  // Get clients in lobby
+  let allClients: any = {};
+  let socketsInLobby = Object.keys(lobby.sockets);
+  for (let s of socketsInLobby) {
+    if ( clients.has(s) ) {
+      allClients[s] = clients.get(s);
+    }
+  }
+
+  // Return result
+  res.json({
+    lobby: lobbyParam,
+    playerCount: socketsInLobby.length,
+    clients: allClients,
+  });
+});
+
+const createClient = (playerId: number, clientId: number): Client => ({
+    playerId: playerId,
+    clientId: clientId === Math.pow(2, 32) - 1 ? null : clientId,
 });
 
 //-------------------------
@@ -143,8 +166,7 @@ io.on('connection', (socket: socketIO.Socket) => {
 					logger.error(`Socket %s sent invalid join command, attempted spoofing another client`);
 					return;
 				}
-				if (s !== socket.id)
-					otherClients[s] = clients.get(s);
+				if (s !== socket.id) otherClients[s] = clients.get(s);
 			}
 		}
 
@@ -152,10 +174,7 @@ io.on('connection', (socket: socketIO.Socket) => {
 
 		socket.join(code);
 
-		const client = {
-      playerId: playerId,
-      clientId: clientId === Math.pow(2, 32) - 1 ? null : clientId
-    };
+		const client = createClient( playerId, clientId );
 
 		// Alert other clients of new user
     clients.set(socket.id, client);
@@ -171,7 +190,7 @@ io.on('connection', (socket: socketIO.Socket) => {
 	//------------------
 	// Player Id Changed
 	socket.on('id', (id: number, clientId: number) => {
-		if (
+    if (
 		  typeof id !== 'number' ||
       typeof clientId !== 'number'
     ) {
@@ -191,14 +210,12 @@ io.on('connection', (socket: socketIO.Socket) => {
 			return;
 		}
 
-		client = {
-			playerId: id,
-			clientId: clientId === Math.pow(2, 32) - 1 ? null : clientId
-		};
+		client = createClient( id, clientId );
+
 		clients.set(socket.id, client);
 		socket.to(code).broadcast.emit('setClient', socket.id, client);
 
-		logger.info( `[ID] Lobby: ${code} Client:`, client );
+		logger.info( `[ID] Change client: ${client.clientId} to ${client.playerId}` );
 	});
 
 
@@ -238,7 +255,7 @@ io.on('connection', (socket: socketIO.Socket) => {
 		const { to, data } = signal;
 		io.to(to).emit('signal', {
 			data,
-			from: socket.id
+			from: socket.id,
 		});
 	});
 
